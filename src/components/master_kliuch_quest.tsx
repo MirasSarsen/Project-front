@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
 import { Key, Lock, Check, X, Sparkles, Loader2, RotateCcw, Flame, Clock, Trophy } from "lucide-react";
 import { fetchTasks, submitAnswer } from "../api/tasksApi";
 import type { Task, SubmitResult } from "../api/tasksApi";
@@ -26,6 +26,20 @@ interface ConfettiPiece {
   rotate: number;
 }
 
+interface Star {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  duration: number;
+  delay: number;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
 function generateConfetti(count: number): ConfettiPiece[] {
   const colors = [palette.gold, palette.teal, palette.rust, "#F2EFE9"];
   return Array.from({ length: count }, (_, i) => ({
@@ -35,6 +49,25 @@ function generateConfetti(count: number): ConfettiPiece[] {
     color: colors[i % colors.length],
     rotate: Math.random() * 360,
   }));
+}
+
+function generateStars(count: number): Star[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: i,
+    x: Math.random() * 100,
+    y: Math.random() * 100,
+    size: Math.random() * 2 + 1,
+    duration: 2 + Math.random() * 3,
+    delay: Math.random() * 3,
+  }));
+}
+
+function motivationalCaption(doneCount: number, total: number): string {
+  if (total === 0) return "Пройди путь — открой все замки";
+  if (doneCount === 0) return "Пройди путь — открой все замки";
+  if (doneCount < total / 2) return "Отличное начало!";
+  if (doneCount < total) return "Уже больше половины пути!";
+  return "Финальный рывок!";
 }
 
 export default function MasterKliuchQuest() {
@@ -56,6 +89,12 @@ export default function MasterKliuchQuest() {
   const [showConfetti, setShowConfetti] = useState<boolean>(false);
   const [coinPopKey, setCoinPopKey] = useState<number>(0);
   const confetti = useRef<ConfettiPiece[]>(generateConfetti(24));
+  const stars = useRef<Star[]>(generateStars(28));
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [points, setPoints] = useState<Point[]>([]);
+  const [svgSize, setSvgSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   const loadTasks = useCallback(() => {
     setStatus("loading");
@@ -74,6 +113,30 @@ export default function MasterKliuchQuest() {
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  // Измеряем центры узлов пути, чтобы нарисовать соединяющую SVG-тропинку.
+  useLayoutEffect(() => {
+    function measure() {
+      const container = listRef.current;
+      if (!container || tasks.length === 0) return;
+      const containerRect = container.getBoundingClientRect();
+      const pts: Point[] = [];
+      tasks.forEach((t) => {
+        const el = nodeRefs.current[t.id];
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        pts.push({
+          x: r.left + r.width / 2 - containerRect.left,
+          y: r.top + r.height / 2 - containerRect.top,
+        });
+      });
+      setPoints(pts);
+      setSvgSize({ w: containerRect.width, h: containerRect.height });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [tasks, status]);
 
   // Таймер: запускается при открытии задания, останавливается при получении фидбэка.
   useEffect(() => {
@@ -173,6 +236,7 @@ export default function MasterKliuchQuest() {
   const finished = tasks.length > 0 && doneCount === tasks.length;
   const timerPct = timeLeft === null ? 100 : Math.max(0, (timeLeft / TIME_LIMIT) * 100);
   const timerDanger = timeLeft !== null && timeLeft <= 5;
+  const mascotPoint = !finished && points[doneCount] ? points[doneCount] : null;
 
   if (status === "loading") {
     return (
@@ -235,10 +299,62 @@ export default function MasterKliuchQuest() {
           0%, 100% { transform: translateY(0); }
           50% { transform: translateY(-10px); }
         }
+        @keyframes twinkle {
+          0%, 100% { opacity: 0.15; transform: scale(1); }
+          50% { opacity: 0.65; transform: scale(1.4); }
+        }
+        @keyframes mascot-bob {
+          0%, 100% { transform: translateY(0) rotate(-4deg); }
+          50% { transform: translateY(-6px) rotate(4deg); }
+        }
+        @keyframes dash-flow {
+          to { stroke-dashoffset: -24; }
+        }
       `}</style>
 
+      {/* Декоративный фон: градиентные пятна + мерцающие звёзды */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div
+          style={{
+            position: "absolute",
+            top: "-12%",
+            left: "-14%",
+            width: 320,
+            height: 320,
+            borderRadius: "50%",
+            background: `radial-gradient(circle, ${palette.gold}26, transparent 70%)`,
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            bottom: "-16%",
+            right: "-12%",
+            width: 380,
+            height: 380,
+            borderRadius: "50%",
+            background: `radial-gradient(circle, ${palette.teal}22, transparent 70%)`,
+          }}
+        />
+        {stars.current.map((s) => (
+          <span
+            key={s.id}
+            style={{
+              position: "absolute",
+              left: `${s.x}%`,
+              top: `${s.y}%`,
+              width: s.size,
+              height: s.size,
+              borderRadius: "50%",
+              background: palette.text,
+              animation: `twinkle ${s.duration}s ease-in-out ${s.delay}s infinite`,
+            }}
+          />
+        ))}
+      </div>
+
       {finished ? (
-        <div className="min-h-screen w-full flex items-center justify-center px-6">
+        <div className="min-h-screen w-full flex items-center justify-center px-6 relative">
           <div
             className="max-w-sm w-full text-center rounded-2xl p-8"
             style={{ background: palette.card, border: `1px solid ${palette.cardBorder}`, animation: "pop-in 0.35s ease-out" }}
@@ -278,10 +394,18 @@ export default function MasterKliuchQuest() {
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-between px-6 py-5" style={{ borderBottom: `1px solid ${palette.cardBorder}` }}>
-            <div>
-              <h1 className="text-xl font-extrabold tracking-tight" style={{ color: palette.text }}>Мастер Ключ</h1>
-              <p className="text-sm" style={{ color: palette.muted }}>Пройди путь — открой все замки</p>
+          <div className="flex items-center justify-between px-6 py-5 relative" style={{ borderBottom: `1px solid ${palette.cardBorder}` }}>
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center"
+                style={{ background: "rgba(212,162,76,0.12)", border: `1px solid ${palette.gold}` }}
+              >
+                <Key size={18} style={{ color: palette.gold }} />
+              </div>
+              <div>
+                <h1 className="text-xl font-extrabold tracking-tight" style={{ color: palette.text }}>Мастер Ключ</h1>
+                <p className="text-sm" style={{ color: palette.muted }}>{motivationalCaption(doneCount, tasks.length)}</p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {streak >= 2 && (
@@ -309,7 +433,7 @@ export default function MasterKliuchQuest() {
             </div>
           </div>
 
-          <div className="max-w-md mx-auto px-6 py-10">
+          <div className="max-w-md mx-auto px-6 py-10 relative">
             <div className="mb-8">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm" style={{ color: palette.muted }}>{doneCount} из {tasks.length} заданий открыто</span>
@@ -323,14 +447,66 @@ export default function MasterKliuchQuest() {
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-6">
+            <div ref={listRef} className="relative flex flex-col items-center gap-6">
+              {svgSize.w > 0 && points.length === tasks.length && (
+                <svg
+                  className="absolute top-0 left-0 pointer-events-none"
+                  width={svgSize.w}
+                  height={svgSize.h}
+                  style={{ overflow: "visible" }}
+                  aria-hidden="true"
+                >
+                  {points.slice(0, -1).map((p, i) => {
+                    const next = points[i + 1];
+                    const segDone = progress[tasks[i].id] === "done";
+                    return (
+                      <line
+                        key={i}
+                        x1={p.x}
+                        y1={p.y}
+                        x2={next.x}
+                        y2={next.y}
+                        stroke={segDone ? palette.teal : palette.cardBorder}
+                        strokeWidth={3}
+                        strokeLinecap="round"
+                        strokeDasharray={segDone ? undefined : "2 10"}
+                        style={segDone ? undefined : { animation: "dash-flow 1.2s linear infinite" }}
+                      />
+                    );
+                  })}
+                </svg>
+              )}
+
+              {mascotPoint && (
+                <div
+                  className="absolute pointer-events-none z-10"
+                  style={{
+                    left: mascotPoint.x + 34,
+                    top: mascotPoint.y - 26,
+                    animation: "mascot-bob 2.4s ease-in-out infinite",
+                  }}
+                >
+                  <svg width="36" height="36" viewBox="0 0 40 40">
+                    <circle cx="20" cy="20" r="18" fill={palette.gold} stroke={palette.bg} strokeWidth="2" />
+                    <circle cx="14" cy="18" r="2.4" fill={palette.bg} />
+                    <circle cx="26" cy="18" r="2.4" fill={palette.bg} />
+                    <path d="M13 25 Q20 30 27 25" stroke={palette.bg} strokeWidth="2" fill="none" strokeLinecap="round" />
+                  </svg>
+                </div>
+              )}
+
               {tasks.map((task: Task, index: number) => {
                 const unlocked = isUnlocked(index);
                 const done = progress[task.id] === "done";
                 const offset = index % 2 === 0 ? -36 : 36;
                 const label = index + 1;
                 return (
-                  <div key={task.id} className="flex flex-col items-center" style={{ transform: `translateX(${offset}px)` }}>
+                  <div
+                    key={task.id}
+                    ref={(el) => { nodeRefs.current[task.id] = el; }}
+                    className="flex flex-col items-center relative z-10"
+                    style={{ transform: `translateX(${offset}px)` }}
+                  >
                     <div className="relative">
                       {unlocked && !done && (
                         <span
