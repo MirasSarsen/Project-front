@@ -704,7 +704,7 @@ export default function MasterKliuchQuest() {
 
           {activeTask && (
             <div
-              className="fixed inset-0 flex items-end sm:items-center justify-center p-4"
+              className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
               style={{ background: "rgba(0,0,0,0.55)" }}
               onClick={closeTask}
               role="dialog"
