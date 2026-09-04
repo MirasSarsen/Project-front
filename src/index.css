@@ -1,1 +1,13 @@
 @import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Nunito:wght@400;600;700&display=swap");
+
+html, body {
+  margin: 0;
+  background: #1B1F2A;
+  color: #F2EFE9;
+  font-family: "Nunito", system-ui, sans-serif;
+}
+
+h1, h2, .font-extrabold, .font-bold {
+  font-family: "Baloo 2", "Nunito", system-ui, sans-serif;
+}
