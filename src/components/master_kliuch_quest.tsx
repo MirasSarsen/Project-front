@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
-import { Key, Lock, Check, X, Sparkles, Loader2, RotateCcw, Flame, Clock, Trophy } from "lucide-react";
+import { Key, Lock, Check, X, Sparkles, Loader2, RotateCcw, Flame, Clock, Trophy, Volume2, VolumeX } from "lucide-react";
 import { fetchTasks, submitAnswer } from "../api/tasksApi";
 import type { Task, SubmitResult } from "../api/tasksApi";
 
@@ -16,6 +16,8 @@ const palette = {
   rust: "#C15A45",
   text: "#F2EFE9",
   muted: "#9AA0AE",
+  hillFar: "#20263380",
+  hillNear: "#161A2480",
 };
 
 interface ConfettiPiece {
@@ -62,12 +64,93 @@ function generateStars(count: number): Star[] {
   }));
 }
 
+// Строит плавную кривую Безье через набор точек, чтобы путь выглядел как
+// извилистая тропа, а не прямые отрезки.
+function buildSmoothPath(pts: Point[]): string {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+    const midX = (p0.x + p1.x) / 2;
+    d += ` C ${midX} ${p0.y}, ${midX} ${p1.y}, ${p1.x} ${p1.y}`;
+  }
+  return d;
+}
+
 function motivationalCaption(doneCount: number, total: number): string {
   if (total === 0) return "Пройди путь — открой все замки";
   if (doneCount === 0) return "Пройди путь — открой все замки";
   if (doneCount < total / 2) return "Отличное начало!";
   if (doneCount < total) return "Уже больше половины пути!";
   return "Финальный рывок!";
+}
+
+// ---------- Звук на Web Audio API (без внешних файлов) ----------
+type SoundKind = "click" | "correct" | "wrong" | "coin" | "unlock";
+
+function useGameSounds(enabled: boolean) {
+  const ctxRef = useRef<AudioContext | null>(null);
+
+  const getCtx = useCallback(() => {
+    if (!ctxRef.current) {
+      const Ctor = window.AudioContext || (window as any).webkitAudioContext;
+      if (Ctor) ctxRef.current = new Ctor();
+    }
+    if (ctxRef.current && ctxRef.current.state === "suspended") {
+      ctxRef.current.resume();
+    }
+    return ctxRef.current;
+  }, []);
+
+  const play = useCallback(
+    (kind: SoundKind) => {
+      if (!enabled) return;
+      const ctx = getCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      const tone = (freq: number, start: number, dur: number, type: OscillatorType, gain: number) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, now + start);
+        g.gain.setValueAtTime(0, now + start);
+        g.gain.linearRampToValueAtTime(gain, now + start + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, now + start + dur);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(now + start);
+        osc.stop(now + start + dur + 0.02);
+      };
+
+      switch (kind) {
+        case "click":
+          tone(520, 0, 0.06, "square", 0.05);
+          break;
+        case "correct":
+          tone(523.25, 0, 0.1, "triangle", 0.08);
+          tone(659.25, 0.08, 0.12, "triangle", 0.08);
+          tone(783.99, 0.16, 0.18, "triangle", 0.09);
+          break;
+        case "wrong":
+          tone(220, 0, 0.12, "sawtooth", 0.06);
+          tone(164.81, 0.1, 0.22, "sawtooth", 0.06);
+          break;
+        case "coin":
+          tone(988, 0, 0.05, "square", 0.06);
+          tone(1318.5, 0.05, 0.12, "square", 0.06);
+          break;
+        case "unlock":
+          tone(392, 0, 0.08, "triangle", 0.06);
+          tone(587.33, 0.06, 0.14, "triangle", 0.07);
+          break;
+      }
+    },
+    [enabled, getCtx]
+  );
+
+  return play;
 }
 
 export default function MasterKliuchQuest() {
@@ -78,12 +161,14 @@ export default function MasterKliuchQuest() {
   const [coins, setCoins] = useState<number>(0);
   const [streak, setStreak] = useState<number>(0);
   const [bestStreak, setBestStreak] = useState<number>(0);
+  const [soundOn, setSoundOn] = useState<boolean>(true);
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<SubmitResult | null>(null);
   const [checking, setChecking] = useState<boolean>(false);
   const [submitError, setSubmitError] = useState<string>("");
+  const [shake, setShake] = useState<boolean>(false);
 
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [showConfetti, setShowConfetti] = useState<boolean>(false);
@@ -95,6 +180,8 @@ export default function MasterKliuchQuest() {
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [points, setPoints] = useState<Point[]>([]);
   const [svgSize, setSvgSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  const playSound = useGameSounds(soundOn);
 
   const loadTasks = useCallback(() => {
     setStatus("loading");
@@ -165,7 +252,9 @@ export default function MasterKliuchQuest() {
       explanation: `Время вышло! Правильный ответ: «${activeTaskForTimeout.options[activeTaskForTimeout.correctIndex]}».`,
     });
     setStreak(0);
-  }, [timeLeft, feedback, activeId, tasks]);
+    playSound("wrong");
+    setShake(true);
+  }, [timeLeft, feedback, activeId, tasks, playSound]);
 
   // Конфетти + всплывающая монетка при верном ответе.
   useEffect(() => {
@@ -178,11 +267,19 @@ export default function MasterKliuchQuest() {
     }
   }, [feedback]);
 
+  // Сброс тряски модалки после проигрывания анимации.
+  useEffect(() => {
+    if (!shake) return;
+    const t = window.setTimeout(() => setShake(false), 420);
+    return () => window.clearTimeout(t);
+  }, [shake]);
+
   const isUnlocked = (index: number): boolean =>
     index === 0 || progress[tasks[index - 1]?.id] === "done";
 
   function openTask(task: Task, index: number) {
     if (!isUnlocked(index)) return;
+    playSound("click");
     setActiveId(task.id);
     setSelected(null);
     setFeedback(null);
@@ -190,11 +287,17 @@ export default function MasterKliuchQuest() {
   }
 
   function closeTask() {
+    playSound("click");
     setActiveId(null);
     setSelected(null);
     setFeedback(null);
     setSubmitError("");
     setTimeLeft(null);
+  }
+
+  function selectOption(i: number) {
+    playSound("click");
+    setSelected(i);
   }
 
   async function handleSubmit() {
@@ -212,8 +315,13 @@ export default function MasterKliuchQuest() {
           setBestStreak((b) => Math.max(b, next));
           return next;
         });
+        playSound("correct");
+        window.setTimeout(() => playSound("coin"), 180);
+        window.setTimeout(() => playSound("unlock"), 380);
       } else {
         setStreak(0);
+        playSound("wrong");
+        setShake(true);
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Не удалось отправить ответ.");
@@ -223,6 +331,7 @@ export default function MasterKliuchQuest() {
   }
 
   function playAgain() {
+    playSound("click");
     setProgress({});
     setCoins(0);
     setStreak(0);
@@ -237,6 +346,13 @@ export default function MasterKliuchQuest() {
   const timerPct = timeLeft === null ? 100 : Math.max(0, (timeLeft / TIME_LIMIT) * 100);
   const timerDanger = timeLeft !== null && timeLeft <= 5;
   const mascotPoint = !finished && points[doneCount] ? points[doneCount] : null;
+  const smoothPathD = buildSmoothPath(points);
+  const doneUpToIndex = (() => {
+    let n = 0;
+    while (n < tasks.length && progress[tasks[n].id] === "done") n++;
+    return n;
+  })();
+  const smoothPathDoneD = buildSmoothPath(points.slice(0, Math.max(1, doneUpToIndex + 1)));
 
   if (status === "loading") {
     return (
@@ -310,9 +426,20 @@ export default function MasterKliuchQuest() {
         @keyframes dash-flow {
           to { stroke-dashoffset: -24; }
         }
+        @keyframes cloud-drift {
+          from { transform: translateX(-40px); }
+          to { transform: translateX(40px); }
+        }
+        @keyframes shake-x {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-10px); }
+          40% { transform: translateX(8px); }
+          60% { transform: translateX(-6px); }
+          80% { transform: translateX(4px); }
+        }
       `}</style>
 
-      {/* Декоративный фон: градиентные пятна + мерцающие звёзды */}
+      {/* Декоративный ландшафт-фон: холмы, облака, мерцающие звёзды */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
         <div
           style={{
@@ -350,6 +477,43 @@ export default function MasterKliuchQuest() {
               animation: `twinkle ${s.duration}s ease-in-out ${s.delay}s infinite`,
             }}
           />
+        ))}
+        {/* Силуэты холмов, создающие ощущение локации-карты */}
+        <svg
+          viewBox="0 0 400 800"
+          preserveAspectRatio="none"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+        >
+          <path
+            d="M -20 260 Q 90 210 180 260 T 420 250 V 800 H -20 Z"
+            fill={palette.hillFar}
+          />
+          <path
+            d="M -20 420 Q 110 480 220 420 T 420 430 V 800 H -20 Z"
+            fill={palette.hillNear}
+          />
+        </svg>
+        {/* Плывущие облака */}
+        {[
+          { top: "8%", size: 70, dur: 26 },
+          { top: "18%", size: 46, dur: 34 },
+          { top: "4%", size: 40, dur: 22 },
+        ].map((c, i) => (
+          <div
+            key={i}
+            style={{
+              position: "absolute",
+              top: c.top,
+              left: `${20 + i * 30}%`,
+              animation: `cloud-drift ${c.dur}s ease-in-out infinite alternate`,
+            }}
+          >
+            <svg width={c.size} height={c.size * 0.55} viewBox="0 0 100 55" opacity={0.18}>
+              <ellipse cx="30" cy="35" rx="28" ry="18" fill={palette.text} />
+              <ellipse cx="60" cy="25" rx="24" ry="20" fill={palette.text} />
+              <ellipse cx="80" cy="38" rx="20" ry="14" fill={palette.text} />
+            </svg>
+          </div>
         ))}
       </div>
 
@@ -408,6 +572,14 @@ export default function MasterKliuchQuest() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSoundOn((s) => !s)}
+                aria-label={soundOn ? "Выключить звук" : "Включить звук"}
+                className="w-9 h-9 rounded-full flex items-center justify-center"
+                style={{ background: palette.card, border: `1px solid ${palette.cardBorder}`, color: palette.muted }}
+              >
+                {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
+              </button>
               {streak >= 2 && (
                 <div
                   className="flex items-center gap-1 px-3 py-2 rounded-full"
@@ -456,24 +628,11 @@ export default function MasterKliuchQuest() {
                   style={{ overflow: "visible" }}
                   aria-hidden="true"
                 >
-                  {points.slice(0, -1).map((p, i) => {
-                    const next = points[i + 1];
-                    const segDone = progress[tasks[i].id] === "done";
-                    return (
-                      <line
-                        key={i}
-                        x1={p.x}
-                        y1={p.y}
-                        x2={next.x}
-                        y2={next.y}
-                        stroke={segDone ? palette.teal : palette.cardBorder}
-                        strokeWidth={3}
-                        strokeLinecap="round"
-                        strokeDasharray={segDone ? undefined : "2 10"}
-                        style={segDone ? undefined : { animation: "dash-flow 1.2s linear infinite" }}
-                      />
-                    );
-                  })}
+                  {/* Извилистая тропа: серый пунктир как база, тёмно-бирюзовая сплошная поверх — пройденная часть */}
+                  <path d={smoothPathD} stroke={palette.cardBorder} strokeWidth={3} strokeLinecap="round" fill="none" strokeDasharray="2 10" style={{ animation: "dash-flow 1.2s linear infinite" }} />
+                  {doneUpToIndex > 0 && (
+                    <path d={smoothPathDoneD} stroke={palette.teal} strokeWidth={3} strokeLinecap="round" fill="none" />
+                  )}
                 </svg>
               )}
 
@@ -498,8 +657,10 @@ export default function MasterKliuchQuest() {
               {tasks.map((task: Task, index: number) => {
                 const unlocked = isUnlocked(index);
                 const done = progress[task.id] === "done";
+                const isBoss = (index + 1) % 5 === 0;
                 const offset = index % 2 === 0 ? -36 : 36;
                 const label = index + 1;
+                const nodeSize = isBoss ? 76 : 64;
                 return (
                   <div
                     key={task.id}
@@ -511,25 +672,30 @@ export default function MasterKliuchQuest() {
                       {unlocked && !done && (
                         <span
                           className="absolute inset-0 rounded-full"
-                          style={{ border: `2px solid ${palette.gold}`, animation: "pulse-ring 1.8s ease-out infinite" }}
+                          style={{ border: `2px solid ${isBoss ? palette.rust : palette.gold}`, animation: "pulse-ring 1.8s ease-out infinite" }}
                         />
                       )}
                       <button
                         onClick={() => openTask(task, index)}
                         disabled={!unlocked}
                         aria-label={`Задание ${label}${done ? ", пройдено" : unlocked ? "" : ", закрыто"}`}
-                        className="w-16 h-16 rounded-full flex items-center justify-center font-bold text-lg transition-transform relative"
+                        className="rounded-full flex items-center justify-center font-bold text-lg transition-transform relative"
                         style={{
-                          background: done ? palette.teal : unlocked ? palette.gold : palette.card,
+                          width: nodeSize,
+                          height: nodeSize,
+                          background: done ? palette.teal : unlocked ? (isBoss ? palette.rust : palette.gold) : palette.card,
                           color: done || unlocked ? "#1B1F2A" : palette.muted,
-                          border: `2px solid ${done ? palette.teal : unlocked ? palette.gold : palette.cardBorder}`,
+                          border: `2px solid ${done ? palette.teal : unlocked ? (isBoss ? palette.rust : palette.gold) : palette.cardBorder}`,
+                          boxShadow: unlocked && !done ? `0 4px 0 rgba(0,0,0,0.25)` : undefined,
                           cursor: unlocked ? "pointer" : "not-allowed",
                         }}
                       >
                         {done ? <Check size={22} /> : unlocked ? label : <Lock size={18} />}
                       </button>
                     </div>
-                    <span className="text-xs mt-2" style={{ color: palette.muted }}>Задание {label}</span>
+                    <span className="text-xs mt-2" style={{ color: palette.muted }}>
+                      {isBoss ? `Босс · Задание ${label}` : `Задание ${label}`}
+                    </span>
                   </div>
                 );
               })}
@@ -546,7 +712,11 @@ export default function MasterKliuchQuest() {
             >
               <div
                 className="w-full max-w-sm rounded-2xl p-6 relative overflow-hidden"
-                style={{ background: palette.card, border: `1px solid ${palette.cardBorder}`, animation: "pop-in 0.25s ease-out" }}
+                style={{
+                  background: palette.card,
+                  border: `1px solid ${palette.cardBorder}`,
+                  animation: shake ? "shake-x 0.42s ease-in-out" : "pop-in 0.25s ease-out",
+                }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {showConfetti && (
@@ -602,7 +772,7 @@ export default function MasterKliuchQuest() {
                     return (
                       <button
                         key={i}
-                        onClick={() => !showResult && setSelected(i)}
+                        onClick={() => !showResult && selectOption(i)}
                         disabled={showResult}
                         className="text-left px-4 py-3 rounded-xl transition-colors"
                         style={{
