@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { Key, Lock, Check, X, Sparkles, Loader2, RotateCcw } from "lucide-react";
-import { fetchTasks, submitAnswer } from "../api/tasksApi";
+import { fetchTasks, submitAnswer, Task, SubmitResult } from "../api/tasksApi";
+
+type Status = "loading" | "ready" | "error";
 
 const palette = {
   bg: "#1B1F2A",
@@ -14,27 +16,27 @@ const palette = {
 };
 
 export default function MasterKliuchQuest() {
-  const [tasks, setTasks] = useState([]);
-  const [status, setStatus] = useState("loading"); // loading | ready | error
-  const [errorMessage, setErrorMessage] = useState("");
-  const [progress, setProgress] = useState({});
-  const [coins, setCoins] = useState(0);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [status, setStatus] = useState<Status>("loading");
+  const [errorMessage, setErrorMessage] = useState<string>("");
+  const [progress, setProgress] = useState<Record<string, "done">>({});
+  const [coins, setCoins] = useState<number>(0);
 
-  const [activeId, setActiveId] = useState(null);
-  const [selected, setSelected] = useState(null);
-  const [feedback, setFeedback] = useState(null);
-  const [checking, setChecking] = useState(false);
-  const [submitError, setSubmitError] = useState("");
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<SubmitResult | null>(null);
+  const [checking, setChecking] = useState<boolean>(false);
+  const [submitError, setSubmitError] = useState<string>("");
 
   const loadTasks = useCallback(() => {
     setStatus("loading");
     setErrorMessage("");
     fetchTasks()
-      .then((data) => {
+      .then((data: Task[]) => {
         setTasks(data);
         setStatus("ready");
       })
-      .catch((err) => {
+      .catch((err: Error) => {
         setErrorMessage(err.message || "Не удалось загрузить задания.");
         setStatus("error");
       });
@@ -44,9 +46,10 @@ export default function MasterKliuchQuest() {
     loadTasks();
   }, [loadTasks]);
 
-  const isUnlocked = (index) => index === 0 || progress[tasks[index - 1]?.id] === "done";
+  const isUnlocked = (index: number): boolean =>
+    index === 0 || progress[tasks[index - 1]?.id] === "done";
 
-  function openTask(task, index) {
+  function openTask(task: Task, index: number) {
     if (!isUnlocked(index)) return;
     setActiveId(task.id);
     setSelected(null);
@@ -62,7 +65,7 @@ export default function MasterKliuchQuest() {
   }
 
   async function handleSubmit() {
-    if (selected === null) return;
+    if (selected === null || activeId === null) return;
     setChecking(true);
     setSubmitError("");
     try {
@@ -73,7 +76,7 @@ export default function MasterKliuchQuest() {
         setCoins((c) => c + 10);
       }
     } catch (err) {
-      setSubmitError(err.message || "Не удалось отправить ответ.");
+      setSubmitError(err instanceof Error ? err.message : "Не удалось отправить ответ.");
     } finally {
       setChecking(false);
     }
@@ -139,7 +142,7 @@ export default function MasterKliuchQuest() {
         </div>
 
         <div className="flex flex-col items-center gap-6">
-          {tasks.map((task, index) => {
+          {tasks.map((task: Task, index: number) => {
             const unlocked = isUnlocked(index);
             const done = progress[task.id] === "done";
             const offset = index % 2 === 0 ? -36 : 36;
@@ -189,11 +192,11 @@ export default function MasterKliuchQuest() {
             <p className="mb-5 leading-relaxed" style={{ color: palette.text }}>{activeTask.question}</p>
 
             <div className="flex flex-col gap-2 mb-5">
-              {activeTask.options.map((opt, i) => {
+              {activeTask.options.map((opt: string, i: number) => {
                 const isSelected = selected === i;
                 const showResult = feedback !== null;
                 const isCorrectOpt = showResult && i === activeTask.correctIndex;
-                const isWrongPick = showResult && isSelected && !feedback.correct;
+                const isWrongPick = showResult && isSelected && !feedback!.correct;
                 return (
                   <button
                     key={i}
