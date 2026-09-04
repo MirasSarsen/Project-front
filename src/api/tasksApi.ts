@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────
 // Слой доступа к данным заданий.
 //
-// Сейчас USE_MOCK = true компонент работает на локальных
-// заглушках.
+// USE_MOCK = false — данные берутся из справочника "Задачи" в 1С
+// через стандартный OData-интерфейс.
 // ─────────────────────────────────────────────────────────────
 
 export interface Task {
@@ -18,12 +18,23 @@ export interface SubmitResult {
   explanation: string;
 }
 
-const USE_MOCK = true;
+const USE_MOCK = false;
 
 const ODATA_BASE_URL = "https://gos.masterkliuch.kz/WEB_BGU_Miras/odata/standard.odata";
-// TODO: уточнить у Армана/Альфараби реальные имена объектов после публикации
 const TASKS_ENDPOINT = `${ODATA_BASE_URL}/Catalog_Задачи`;
-const RESULTS_ENDPOINT = `${ODATA_BASE_URL}/Document_Результаты`;
+
+// ⚠️ ВНИМАНИЕ: логин/пароль, зашитые прямо во фронтенд, видны любому
+// через DevTools (вкладка Network), а вместе с задачами наружу уходит
+// и НомерПравильногоОтвета — то есть правильные ответы можно подсмотреть
+// в исходном JSON ещё до того, как отвечать. Для реального прод-использования
+// лучше вернуться к варианту с HTTP-сервисом (см. предыдущее обсуждение),
+// где сервер сам решает, верно ли, и наружу отдаёт только id/question/options.
+const ODATA_LOGIN = "Miras_ADMIN";
+const ODATA_PASSWORD = "Passw0rd!";
+
+function authHeader(): string {
+  return "Basic " + btoa(`${ODATA_LOGIN}:${ODATA_PASSWORD}`);
+}
 
 const mockTasks: Task[] = [
   { id: "t1", question: "Реши: 12 × 7 − 15 = ?", options: ["69", "74", "84", "99"], correctIndex: 0, explanation: "12×7=84, 84−15=69." },
@@ -40,17 +51,35 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Приводит одну запись OData к формату Task, который ожидает фронтенд.
+function mapODataItem(item: any): Task {
+  const options = [item.Вариант1, item.Вариант2, item.Вариант3, item.Вариант4];
+  // НомерПравильногоОтвета в 1С хранится 1-based (1..4), во фронтенде — 0-based.
+  const correctIndex = Number(item.НомерПравильногоОтвета) - 1;
+  return {
+    id: item.Ref_Key,
+    question: item.ТекстВопроса,
+    options,
+    correctIndex,
+    explanation: `Правильный ответ: «${options[correctIndex]}»`,
+  };
+}
+
 export async function fetchTasks(): Promise<Task[]> {
   if (USE_MOCK) {
     await delay(500);
     return mockTasks;
   }
 
+  const fields = ["Ref_Key", "ТекстВопроса", "Вариант1", "Вариант2", "Вариант3", "Вариант4", "НомерПравильногоОтвета"].join(",");
+
   let response: Response;
   try {
-    response = await fetch(`${TASKS_ENDPOINT}?$format=json`, {
-      headers: { Accept: "application/json" },
-      // TODO: уточнить способ авторизации (Basic Auth / cookie) у команды
+    response = await fetch(`${TASKS_ENDPOINT}?$format=json&$select=${fields}`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: authHeader(),
+      },
     });
   } catch {
     throw new Error("Не удалось связаться с сервером. Проверьте соединение.");
@@ -61,8 +90,7 @@ export async function fetchTasks(): Promise<Task[]> {
   }
 
   const data = await response.json();
-  // TODO: заменить на реальный маппинг полей 1С, когда будет известна структура
-  return data.value;
+  return (data.value as any[]).map(mapODataItem);
 }
 
 export async function submitAnswer(taskId: string, answerIndex: number): Promise<SubmitResult> {
@@ -73,24 +101,36 @@ export async function submitAnswer(taskId: string, answerIndex: number): Promise
     return { correct: answerIndex === task.correctIndex, explanation: task.explanation };
   }
 
+  // Проверка ответа делается на клиенте: тянем этот же элемент справочника
+  // по Ref_Key и сравниваем НомерПравильногоОтвета. Это самый простой вариант
+  // без отдельного документа "Результаты" — но он не сохраняет статистику
+  // ответов пользователя. Если понадобится хранить историю прохождений,
+  // нужно будет завести отдельный документ и писать в него через HTTP-сервис.
   let response: Response;
   try {
-    response = await fetch(RESULTS_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        // TODO: поля-заглушки, заменить на реальные имена реквизитов документа
-        Задача_Key: taskId,
-        Ответ: answerIndex,
-      }),
-    });
+    response = await fetch(
+      `${TASKS_ENDPOINT}(guid'${taskId}')?$format=json&$select=Вариант1,Вариант2,Вариант3,Вариант4,НомерПравильногоОтвета`,
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: authHeader(),
+        },
+      }
+    );
   } catch {
-    throw new Error("Не удалось отправить ответ. Проверьте соединение.");
+    throw new Error("Не удалось проверить ответ. Проверьте соединение.");
   }
 
   if (!response.ok) {
-    throw new Error(`Сервер не принял ответ (${response.status}).`);
+    throw new Error(`Сервер не принял запрос (${response.status}).`);
   }
 
-  return response.json();
+  const item = await response.json();
+  const options = [item.Вариант1, item.Вариант2, item.Вариант3, item.Вариант4];
+  const correctIndex = Number(item.НомерПравильногоОтвета) - 1;
+
+  return {
+    correct: answerIndex === correctIndex,
+    explanation: `Правильный ответ: «${options[correctIndex]}»`,
+  };
 }
