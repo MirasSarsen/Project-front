@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Key, Lock, Check, X, Sparkles, Loader2, RotateCcw } from "lucide-react";
-import { fetchTasks, submitAnswer, Task, SubmitResult } from "../api/tasksApi";
+import { fetchTasks, submitAnswer } from "../api/tasksApi";
+import type { Task, SubmitResult } from "../api/tasksApi";
 
 type Status = "loading" | "ready" | "error";
 
