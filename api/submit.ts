@@ -1,6 +1,3 @@
-// Vercel Serverless Function: POST /api/submit
-// Body: { taskId: string, answerIndex: number }
-
 export const config = { runtime: "nodejs" };
 
 const SUBMIT_ENDPOINT =
