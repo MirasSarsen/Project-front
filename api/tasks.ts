@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
       console.error("1C GET /tasks error:", upstream.status, text);
 
       res.status(upstream.status).json({
-        error: 1С вернул ошибку (${upstream.status}).,
+        error: `1С вернул ошибку (${upstream.status}).`,
       });
       return;
     }
