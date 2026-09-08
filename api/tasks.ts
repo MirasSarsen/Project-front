@@ -25,14 +25,16 @@ export default async function handler(req: any, res: any) {
       console.error("1C GET /tasks error:", upstream.status, text);
 
       res.status(upstream.status).json({
-        error: `1С вернул ошибку (${upstream.status}).`,
+        error: 1С вернул ошибку (${upstream.status}).,
       });
+
       return;
     }
 
     const tasks = await upstream.json();
 
     res.status(200).json(tasks);
+
   } catch (err) {
     console.error("GET /api/tasks failed:", err);
 
