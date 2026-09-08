@@ -1,7 +1,25 @@
+// Vercel Serverless Function: POST /api/submit
+
 export const config = { runtime: "nodejs" };
 
 const SUBMIT_ENDPOINT =
   "https://gos.masterkliuch.kz/WEB_BGU_Miras/hs/quest/submit";
+
+function authHeader(): string {
+  const login = process.env.ODATA_LOGIN;
+  const password = process.env.ODATA_PASSWORD;
+
+  if (!login || !password) {
+    throw new Error(
+      "ODATA_LOGIN / ODATA_PASSWORD не заданы в переменных окружения"
+    );
+  }
+
+  return (
+    "Basic " +
+    Buffer.from(${login}:${password}).toString("base64")
+  );
+}
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
@@ -24,12 +42,11 @@ export default async function handler(req: any, res: any) {
   try {
     const upstream = await fetch(SUBMIT_ENDPOINT, {
       method: "POST",
-
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        Authorization: authHeader(),
       },
-
       body: JSON.stringify({
         taskId,
         answerIndex,
