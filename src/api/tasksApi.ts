@@ -1,8 +1,11 @@
 // ─────────────────────────────────────────────────────────────
 // Слой доступа к данным заданий.
 //
-// USE_MOCK = false — данные берутся из справочника "Задачи" в 1С
-// через стандартный OData-интерфейс.
+// USE_MOCK = true — сейчас используются только заглушки (mockTasks).
+// Код обращения к реальному 1С (через /api/tasks и /api/submit —
+// см. папку /api в корне проекта) закомментирован ниже, а не удалён:
+// когда 1С снова будет доступен, достаточно раскомментировать
+// fetchTasksReal/submitAnswerReal и переключить USE_MOCK на false.
 // ─────────────────────────────────────────────────────────────
 
 export interface Task {
@@ -20,22 +23,6 @@ export interface SubmitResult {
 
 const USE_MOCK = false;
 
-const ODATA_BASE_URL = "https://gos.masterkliuch.kz/WEB_BGU_Miras/odata/standard.odata";
-const TASKS_ENDPOINT = `${ODATA_BASE_URL}/Catalog_Задачи`;
-
-// ⚠️ ВНИМАНИЕ: логин/пароль, зашитые прямо во фронтенд, видны любому
-// через DevTools (вкладка Network), а вместе с задачами наружу уходит
-// и НомерПравильногоОтвета — то есть правильные ответы можно подсмотреть
-// в исходном JSON ещё до того, как отвечать. Для реального прод-использования
-// лучше вернуться к варианту с HTTP-сервисом (см. предыдущее обсуждение),
-// где сервер сам решает, верно ли, и наружу отдаёт только id/question/options.
-const ODATA_LOGIN = "Miras_ADMIN";
-const ODATA_PASSWORD = "Passw0rd!";
-
-function authHeader(): string {
-  return "Basic " + btoa(`${ODATA_LOGIN}:${ODATA_PASSWORD}`);
-}
-
 const mockTasks: Task[] = [
   { id: "t1", question: "Реши: 12 × 7 − 15 = ?", options: ["69", "74", "84", "99"], correctIndex: 0, explanation: "12×7=84, 84−15=69." },
   { id: "t2", question: "Какое число лишнее: 4, 9, 16, 20, 25?", options: ["4", "9", "20", "25"], correctIndex: 2, explanation: "Остальные — точные квадраты (2²,3²,4²,5²)." },
@@ -51,18 +38,45 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Приводит одну запись OData к формату Task, который ожидает фронтенд.
-function mapODataItem(item: any): Task {
-  const options = [item.Вариант1, item.Вариант2, item.Вариант3, item.Вариант4];
-  // НомерПравильногоОтвета в 1С хранится 1-based (1..4), во фронтенде — 0-based.
-  const correctIndex = Number(item.НомерПравильногоОтвета) - 1;
-  return {
-    id: item.Ref_Key,
-    question: item.ТекстВопроса,
-    options,
-    correctIndex,
-    explanation: `Правильный ответ: «${options[correctIndex]}»`,
-  };
+async function fetchTasksReal(): Promise<Task[]> {
+  let response: Response;
+  try {
+    response = await fetch("/api/tasks", {
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new Error("Не удалось связаться с сервером. Проверьте соединение.");
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error ?? `Сервер вернул ошибку (${response.status}).`);
+  }
+
+  return response.json();
+}
+
+async function submitAnswerReal(taskId: string, answerIndex: number): Promise<SubmitResult> {
+  let response: Response;
+  try {
+    response = await fetch("/api/submit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ taskId, answerIndex }),
+    });
+  } catch {
+    throw new Error("Не удалось проверить ответ. Проверьте соединение.");
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error ?? `Сервер не принял запрос (${response.status}).`);
+  }
+
+  return response.json();
 }
 
 export async function fetchTasks(): Promise<Task[]> {
@@ -70,27 +84,7 @@ export async function fetchTasks(): Promise<Task[]> {
     await delay(500);
     return mockTasks;
   }
-
-  const fields = ["Ref_Key", "ТекстВопроса", "Вариант1", "Вариант2", "Вариант3", "Вариант4", "НомерПравильногоОтвета"].join(",");
-
-  let response: Response;
-  try {
-    response = await fetch(`${TASKS_ENDPOINT}?$format=json&$select=${fields}`, {
-      headers: {
-        Accept: "application/json",
-        Authorization: authHeader(),
-      },
-    });
-  } catch {
-    throw new Error("Не удалось связаться с сервером. Проверьте соединение.");
-  }
-
-  if (!response.ok) {
-    throw new Error(`Сервер вернул ошибку (${response.status}).`);
-  }
-
-  const data = await response.json();
-  return (data.value as any[]).map(mapODataItem);
+  return fetchTasksReal();
 }
 
 export async function submitAnswer(taskId: string, answerIndex: number): Promise<SubmitResult> {
@@ -100,37 +94,5 @@ export async function submitAnswer(taskId: string, answerIndex: number): Promise
     if (!task) throw new Error("Задание не найдено.");
     return { correct: answerIndex === task.correctIndex, explanation: task.explanation };
   }
-
-  // Проверка ответа делается на клиенте: тянем этот же элемент справочника
-  // по Ref_Key и сравниваем НомерПравильногоОтвета. Это самый простой вариант
-  // без отдельного документа "Результаты" — но он не сохраняет статистику
-  // ответов пользователя. Если понадобится хранить историю прохождений,
-  // нужно будет завести отдельный документ и писать в него через HTTP-сервис.
-  let response: Response;
-  try {
-    response = await fetch(
-      `${TASKS_ENDPOINT}(guid'${taskId}')?$format=json&$select=Вариант1,Вариант2,Вариант3,Вариант4,НомерПравильногоОтвета`,
-      {
-        headers: {
-          Accept: "application/json",
-          Authorization: authHeader(),
-        },
-      }
-    );
-  } catch {
-    throw new Error("Не удалось проверить ответ. Проверьте соединение.");
-  }
-
-  if (!response.ok) {
-    throw new Error(`Сервер не принял запрос (${response.status}).`);
-  }
-
-  const item = await response.json();
-  const options = [item.Вариант1, item.Вариант2, item.Вариант3, item.Вариант4];
-  const correctIndex = Number(item.НомерПравильногоОтвета) - 1;
-
-  return {
-    correct: answerIndex === correctIndex,
-    explanation: `Правильный ответ: «${options[correctIndex]}»`,
-  };
+  return submitAnswerReal(taskId, answerIndex);
 }
